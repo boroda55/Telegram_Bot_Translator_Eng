@@ -109,7 +109,12 @@ values
 
 --insert into users(name, number_user) values ('Ganja','528679394');
 
-delete from users where userid=3;
+DELETE FROM Studied_users 
+WHERE UserID IN (SELECT UserID FROM Users WHERE number_user = %s) 
+AND WordID IN (SELECT WordID FROM Words WHERE Word_eng = %s);
+
+--удаление слова у пользователя
+delete from studied_users where 
 
 delete from studied_users
 -- вывод слов рандомных
@@ -124,9 +129,18 @@ LIMIT 11;
 --добавление нового слова пользователю
 insert into studied_users (
 SELECT u.userid, w.wordid FROM users u
-CROSS JOIN Words w
+CROSS JOIN words w
 WHERE u.number_user = 528679394
 AND NOT EXISTS (SELECT 1 FROM studied_users su
 WHERE su.userid = u.userid AND su.wordid = w.wordid)
 ORDER BY RANDOM()
-LIMIT 1);
+LIMIT 1) returning wordid;
+
+
+SELECT word_eng, word_rus
+                    FROM words w 
+                    inner join studied_users su on w.wordid=su.wordid
+                    inner join users u on su.userid=u.userid
+                    where  u.number_user = %s and w.word_eng != %s
+                    ORDER BY RANDOM()
+                    LIMIT %s ;
