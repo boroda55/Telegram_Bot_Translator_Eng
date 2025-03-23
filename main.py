@@ -18,7 +18,6 @@ database = config['SQL']['database']
 user = config['SQL']['user']
 password = config['SQL']['password']
 bot = TeleBot(token_bot, state_storage=state_storage)
-conn = psycopg2.connect(database=database, user=user, password=password)
 # проверка русского слова
 def is_rus_word(word):
     pattern = r'^[а-яА-ЯёЁ]+$'
@@ -29,17 +28,20 @@ def is_eng_word(word):
     return bool(re.match(pattern, word))
 
 def add_user_sql(name, name_id):
+    conn = psycopg2.connect(database=database, user=user, password=password)
     with conn.cursor() as cur:
         cur.execute('insert into users(name, number_user) values (%s, %s) RETURNING userid;', (name, name_id))
         user_id = cur.fetchone()[0]
         for x in range(1,11):
             cur.execute('insert into studied_users(userid, wordid) values (%s, %s)', (user_id, x))
         conn.commit()
+        cur.close()
     conn.close()
 
 def search_word_sql(name_id,limited, no_word=''):
     word_eng = list()
     word_rus = list()
+    conn = psycopg2.connect(database=database, user=user, password=password)
     with conn.cursor() as cur:
         query = '''SELECT word_eng, word_rus
                     FROM words w 
@@ -53,6 +55,7 @@ def search_word_sql(name_id,limited, no_word=''):
             word_eng.append(row[0])
             word_rus.append(row[1])
         cur.close()
+    conn.close()
     if limited == 1:
         r_word_eng = word_eng[0]
         r_word_rus = word_rus[0]
@@ -62,32 +65,53 @@ def search_word_sql(name_id,limited, no_word=''):
 
 def add_known_users_sql():
     known_users = list()
+    conn = psycopg2.connect(database=database, user=user, password=password)
     with conn.cursor() as cur:
         query = 'select number_user  from users;'
         cur.execute(query)
         known_users = [x[0] for x in cur.fetchall()]
         cur.close()
+    conn.close()
     return known_users
 
 def add_word_sql(name_id):
+    word_eng = list()
+    word_rus = list()
+    conn = psycopg2.connect(database=database, user=user, password=password)
     with conn.cursor() as cur:
         query = '''insert into studied_users (
                     SELECT u.userid, w.wordid FROM users u
                     CROSS JOIN Words w WHERE u.number_user = %s
                     AND NOT EXISTS (SELECT 1 FROM studied_users su
                     WHERE su.userid = u.userid AND su.wordid = w.wordid)
-                    ORDER BY RANDOM()LIMIT 1);'''
+                    ORDER BY RANDOM()LIMIT 1) returning wordid;'''
         cur.execute(query, (name_id,))
+        word_id = cur.fetchone()[0]
+        query = '''select word_eng, word_rus from words
+        where wordid = %s;'''
+        cur.execute(query, (word_id,))
+        for row in cur.fetchall():
+            word_eng.append(row[0])
+            word_rus.append(row[1])
         conn.commit()
+        cur.close()
     conn.close()
+    return word_eng[0], word_rus[0]
 
 
+def del_word_sql(name_id, word):
+    conn = psycopg2.connect(database=database, user=user, password=password)
+    with conn.cursor() as cur:
+        query ='''DELETE FROM Studied_users WHERE UserID IN (SELECT UserID FROM Users WHERE number_user = %s) 
+                AND WordID IN (SELECT WordID FROM Words WHERE Word_eng = %s);'''
+        cur.execute(query, (name_id, word))
+        conn.commit()
+        cur.close()
+    conn.close()
 
 known_users = add_known_users_sql()
 userStep = {}
 buttons = []
-
-
 
 def show_hint(*lines):
     return '\n'.join(lines)
@@ -101,6 +125,7 @@ class Command:
     ADD_WORD = 'Добавить слово ➕'
     DELETE_WORD = 'Удалить слово🔙'
     NEXT = 'Дальше ⏭'
+    START = 'Начать'
 
 
 class MyStates(StatesGroup):
@@ -116,7 +141,7 @@ def get_user_step(uid):
     else:
         known_users.append(uid)
         userStep[uid] = 0
-        print("New user detected, who hasn't used \"/start\" yet")
+        print("Обнаружен новый пользователь, нажмите \"/start\"")
         return 0
 
 
@@ -142,10 +167,12 @@ def create_cards(message):
     other_words_btns = [types.KeyboardButton(word) for word in others]
     buttons.extend(other_words_btns)
     random.shuffle(buttons)
+    start_btn = types.KeyboardButton(Command.START)
     next_btn = types.KeyboardButton(Command.NEXT)
     add_word_btn = types.KeyboardButton(Command.ADD_WORD)
     delete_word_btn = types.KeyboardButton(Command.DELETE_WORD)
-    buttons.extend([next_btn, add_word_btn, delete_word_btn])
+
+    buttons.extend([start_btn, next_btn, add_word_btn, delete_word_btn])
 
     markup.add(*buttons)
 
@@ -162,18 +189,35 @@ def create_cards(message):
 def next_cards(message):
     create_cards(message)
 
+@bot.message_handler(func=lambda message: message.text == Command.START)
+def start_cards(message):
+    create_cards(message)
+
 # сделать
 @bot.message_handler(func=lambda message: message.text == Command.DELETE_WORD)
 def delete_word(message):
+    cid = message.chat.id
     with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
-        print(data['target_word'])  # удалить из БД
+        if 'target_word' not in data:
+            print('ошибка в удалении слова')
+            bot.send_message(cid, '''У вас не выбрано слово которое нужно удалить.
+                            Удаление работает по принципу вы нажимаете кнопку "Начать" и когда у вас появляется 
+                            сообщение "Выберите перевод слова:" то тогда вы нажимаете на кнопку 
+                            "Удалить слово" и слово это удалится из вашего изучения''')
+        else:
+            del_word_sql(cid, data['target_word'])
+            bot.send_message(cid, f'Вы удалили слово {data['target_word']} из списка изучения слов')
+            print(data['target_word'])  # удалить из БД
+
+
 
 
 @bot.message_handler(func=lambda message: message.text == Command.ADD_WORD)
 def add_word(message):
     cid = message.chat.id
     userStep[cid] = 1
-    add_word_sql(cid)
+    add_word_end, add_word_rus = add_word_sql(cid)
+    bot.send_message(cid, f'Вы добавили себе в изучение слово {add_word_end} -> {add_word_rus}')
     print(message.text, message.chat.first_name)  # сохранить в БД
 
 
